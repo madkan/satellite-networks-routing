@@ -55,6 +55,10 @@ class Simulator:
         self.queue_wait_s: dict[int, float] = {}
         self.dropped_packet_ids: set[int] = set()
         self.event_log: list[str] = []
+        # Each link maps to (time in seconds, number of waiting packets) samples.
+        self.queue_history: dict[tuple[str, str], list[tuple[float, int]]] = {
+            edge: [] for edge in links
+        }
         self.generated_count = 0
         self.delivered_count = 0
         self.dropped_count = 0
@@ -93,6 +97,7 @@ class Simulator:
                     raise ValueError(f"packet route uses a missing link: {edge}")
 
         self._has_run = True
+        self._record_queues()  # Empty network at time zero, before generation.
         for packet in packets:
             self._schedule(packet.created_at_s, "generate", packet)
         while self._events:
@@ -113,6 +118,7 @@ class Simulator:
                 self._arrive(packet)
 
             self._check_accounting()
+            self._record_queues()
 
         if self.generated_count != self.delivered_count + self.dropped_count:
             raise RuntimeError("events ended with packets still outstanding")
@@ -216,6 +222,18 @@ class Simulator:
 
     def _log(self, message: str) -> None:
         self.event_log.append(f"{self.current_time_s * 1000:8.3f} ms: {message}")
+
+    def _record_queues(self) -> None:
+        """Snapshot waiting packets after an event, excluding transmitters.
+
+        A packet that enters a queue and starts immediately contributes no
+        waiting occupancy after that event. Multiple events at the same time
+        produce multiple samples in processing order; the last sample at that
+        time is the state that persists until the next event. Plot these as
+        steps, not linearly interpolated values. Recording never schedules events.
+        """
+        for edge, link in self.links.items():
+            self.queue_history[edge].append((self.current_time_s, link.queue_length))
 
 
 def main() -> None:

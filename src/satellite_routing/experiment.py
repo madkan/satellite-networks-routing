@@ -8,7 +8,7 @@ drains all remaining packets. Final counts and delivered-packet averages include
 that drain period. Runs start empty, with regular arrivals and no warm-up period.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import isfinite
 from statistics import mean
 
@@ -36,6 +36,10 @@ class ExperimentResult:
     throughput_bps: float  # Payload delivered in the window / duration_s.
     drain_time_s: float
     accounting_passed: bool
+    # Per-link (time_seconds, waiting_packets) snapshots for later plotting.
+    # Tuples preserve the samples independently of the simulator's mutable lists.
+    queue_history: dict[tuple[str, str], tuple[tuple[float, int], ...]] = field(repr=False)
+    buffer_capacities_packets: dict[tuple[str, str], int] = field(repr=False)
 
 
 def generate_packets(
@@ -122,6 +126,15 @@ def run_experiment(
     if not accounting_passed:
         raise RuntimeError("final experiment packet accounting failed")
 
+    queue_history = {}
+    for edge, samples in simulator.queue_history.items():
+        history = tuple(samples)
+        # At low load the last delivery may precede the measurement cutoff.
+        # The drained network stays empty through the rest of that window.
+        if history[-1][0] < duration_s:
+            history += ((duration_s, 0),)
+        queue_history[edge] = history
+
     return ExperimentResult(
         name=name,
         route=route,
@@ -138,6 +151,10 @@ def run_experiment(
         # The last event may occur before generation's nominal cutoff at low load.
         drain_time_s=max(0.0, simulator.current_time_s - duration_s),
         accounting_passed=accounting_passed,
+        queue_history=queue_history,
+        buffer_capacities_packets={
+            edge: link.buffer_capacity_packets for edge, link in links.items()
+        },
     )
 
 

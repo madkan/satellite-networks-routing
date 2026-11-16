@@ -123,6 +123,32 @@ class ExperimentTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 run_experiment("unreachable", 0.020)
 
+    def test_low_load_queue_history_covers_full_measurement_window(self):
+        result = run_experiment("low", 0.020, duration_s=0.100)
+        self.assertEqual(len(result.queue_history), 6)
+        self.assertEqual(set(result.queue_history), set(result.buffer_capacities_packets))
+        for edge, history in result.queue_history.items():
+            self.assertIsInstance(history, tuple)
+            self.assertEqual(history[0], (0.0, 0))
+            self.assertEqual(history[-1], (0.100, 0))
+            self.assertTrue(all(waiting == 0 for _, waiting in history))
+            self.assertEqual(result.buffer_capacities_packets[edge], 50)
+
+    def test_overload_history_reaches_capacity_then_drains(self):
+        result = run_experiment("overload", 0.005, duration_s=1.0)
+        bottleneck = ("S1", "S2")
+        history = result.queue_history[bottleneck]
+        self.assertEqual(max(q for _, q in history), 50)
+        self.assertGreater(result.dropped_count, 0)
+        self.assertTrue(any(t > 1.0 and q > 0 for t, q in history))
+        self.assertAlmostEqual(history[-1][0], 1.0 + result.drain_time_s)
+        self.assertEqual(history[-1][1], 0)
+        for edge, samples in result.queue_history.items():
+            self.assertTrue(all(0 <= q <= result.buffer_capacities_packets[edge] for _, q in samples))
+        # Final records remain empty rather than changing when another run starts.
+        run_experiment("next run", 0.020, duration_s=0.100)
+        self.assertEqual(result.queue_history[bottleneck], history)
+
 
 if __name__ == "__main__":
     unittest.main()

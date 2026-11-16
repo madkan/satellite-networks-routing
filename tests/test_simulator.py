@@ -138,6 +138,57 @@ class SimulatorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             simulator.run([])
 
+    def test_queue_history_matches_three_packet_waiting_times(self):
+        _, links = build_demo_topology()
+        simulator = Simulator(links)
+        simulator.run([
+            Packet(i + 1, "f", 8000, i * 0.005, UPPER_ROUTE) for i in range(3)
+        ])
+        samples = simulator.queue_history[("S1", "S2")]
+        # Packet 2 waits during [9,12) ms; packet 3 waits during [14,20) ms.
+        changes = [samples[0]]
+        for sample in samples[1:]:
+            if sample[1] != changes[-1][1]:
+                changes.append(sample)
+        expected = [(0.0, 0), (0.009, 1), (0.012, 0), (0.014, 1), (0.020, 0)]
+        self.assertEqual(len(changes), len(expected))
+        for (actual_time, actual_count), (expected_time, expected_count) in zip(changes, expected):
+            self.assertAlmostEqual(actual_time, expected_time)
+            self.assertEqual(actual_count, expected_count)
+        # The area under queue length equals total waiting time when none drop.
+        area = sum(
+            (next_time - time) * waiting
+            for (time, waiting), (next_time, _) in zip(samples, samples[1:])
+        )
+        self.assertAlmostEqual(area, 0.009)
+        self.assertAlmostEqual(area, sum(simulator.queue_wait_s.values()))
+        for edge, history in simulator.queue_history.items():
+            self.assertEqual(history[0], (0.0, 0))
+            self.assertAlmostEqual(history[-1][0], 0.034)
+            self.assertEqual(history[-1][1], 0)
+            self.assertTrue(all(t1 <= t2 for (t1, _), (t2, _) in zip(history, history[1:])))
+            if edge != ("S1", "S2"):
+                self.assertTrue(all(waiting == 0 for _, waiting in history))
+
+    def test_queue_history_preserves_same_time_events_and_buffer_limit(self):
+        simulator = Simulator({("A", "B"): Link("A", "B", 8, 10, 1)})
+        simulator.run([Packet(i, "f", 8, 0.0, ("A", "B")) for i in (1, 2, 3)])
+        samples = simulator.queue_history[("A", "B")]
+        # Initial state, first packet starts, second waits, third drops.
+        self.assertEqual([q for t, q in samples if t == 0.0], [0, 0, 1, 1])
+        self.assertTrue(all(0 <= q <= 1 for _, q in samples))
+        # Packet 2 leaves the queue at 1 s, while packet 1 is still propagating.
+        self.assertEqual([q for t, q in samples if t == 1.0], [0])
+        self.assertEqual(samples[-1], (12.0, 0))
+        self.assertEqual(simulator.dropped_packet_ids, {3})
+
+    def test_empty_batch_records_initial_queue_state(self):
+        _, links = build_demo_topology()
+        simulator = Simulator(links)
+        simulator.run([])
+        self.assertEqual(set(simulator.queue_history), set(links))
+        self.assertTrue(all(history == [(0.0, 0)] for history in simulator.queue_history.values()))
+
 
 if __name__ == "__main__":
     unittest.main()
